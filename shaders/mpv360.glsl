@@ -32,6 +32,7 @@ dual_vert_equirectangular
 cylindrical
 equiangular_cubemap
 dual_equiangular_cubemap
+gopro_max
 
 //!PARAM eye
 //!TYPE ENUM int
@@ -51,6 +52,12 @@ linear
 mitchell
 lanczos
 
+//!PARAM gopro_overlap
+//!TYPE int
+//!MINIMUM 0
+//!MAXIMUM 1024
+64
+
 //!HOOK MAINPRESUB
 //!BIND HOOKED
 //!DESC mpv360 - 360° Video Viewer
@@ -61,6 +68,13 @@ float sinc(float x) {
     if (abs(x) < 1e-6) return 1.0;
     x *= M_PI;
     return sin(x) / x;
+}
+
+float atan2(in float y, in float x) {
+    return abs(x) < 1e-6 ? sign(y) * M_PI / 2.0 : atan(y, x);
+}
+vec2 atan2(in vec2 v, in float x) {
+    return abs(x) < 1e-6 ? sign(v) * M_PI / 2.0 : atan(v, vec2(x));
 }
 
 float weight(float x) {
@@ -154,7 +168,7 @@ bool is_stereo() {
 vec2 sample_dual_fisheye(vec3 dir, int source_eye) {
     dir = normalize(dir);
     float theta = acos(dir.z);
-    float phi = atan(dir.y, dir.x);
+    float phi = atan2(dir.y, dir.x);
 
     float r = theta / (fisheye_fov * 0.5);
     if (r > 1.0)
@@ -167,7 +181,7 @@ vec2 sample_dual_fisheye(vec3 dir, int source_eye) {
 }
 
 vec2 sample_dual_vert_equirectangular(vec3 dir, int source_eye) {
-    float lon = atan(dir.x, dir.z);
+    float lon = atan2(dir.x, dir.z);
     float lat = asin(dir.y);
 
     float u = (lon + M_PI) / (2.0 * M_PI);
@@ -184,7 +198,7 @@ vec2 sample_dual_half_equirectangular(vec3 dir, int source_eye) {
     if (dir.z < 0.0)
         return vec2(-1000.0);
 
-    float lon = atan(dir.x, dir.z);
+    float lon = atan2(dir.x, dir.z);
     float lat = asin(dir.y);
 
     float u = (lon + M_PI * 0.5) / (2.0 * M_PI);
@@ -200,7 +214,7 @@ vec2 sample_half_equirectangular(vec3 dir) {
     if (dir.z < 0.0)
         return vec2(-1000.0);
 
-    float lon = atan(dir.x, dir.z);
+    float lon = atan2(dir.x, dir.z);
     float lat = asin(dir.y);
 
     float u = (lon + M_PI * 0.5) / M_PI;
@@ -209,13 +223,13 @@ vec2 sample_half_equirectangular(vec3 dir) {
 }
 
 vec2 sample_equirectangular(vec3 dir) {
-    float lon = atan(dir.x, dir.z);
+    float lon = atan2(dir.x, dir.z);
     float lat = asin(dir.y);
     return vec2((lon + M_PI) / (2.0 * M_PI), (lat + M_PI * 0.5) / M_PI);
 }
 
 vec2 sample_cylindrical(vec3 dir) {
-    float u = (atan(dir.x, dir.z) + M_PI) / (2.0 * M_PI);
+    float u = (atan2(dir.x, dir.z) + M_PI) / (2.0 * M_PI);
     float v = dir.y / length(dir.xz);
     return (v < -1.0 || v > 1.0) ? vec2(-1000.0) : vec2(u, (v + 1.0) * 0.5);
 }
@@ -283,7 +297,7 @@ vec2 sample_equiangular_cubemap(vec3 dir, int source_eye) {
     }
 
     // Equi-Angular Projection
-    vec2 uv = vec2(atan(view.x, view.z), atan(view.y, view.z)) * (2.0 / M_PI) + 0.5;
+    vec2 uv = vec2(atan2(view.x, view.z), atan2(view.y, view.z)) * (2.0 / M_PI) + 0.5;
 
     if (face == 3 || face == 5) {
         // Rotate top and bottom faces 90° CCW
@@ -316,6 +330,62 @@ vec2 sample_equiangular_cubemap(vec3 dir, int source_eye) {
     uv_end += is_stereo() ? vec2(-border.x, border.y) : vec2(border.x, -border.y);
 
     return mix(uv_start, uv_end, uv);
+}
+
+vec4 sample_gopro_max(vec3 dir) {
+    vec3 abs_dir = abs(dir);
+    float cube_size = input_size.y / 2.0;
+    float gp_cube_width = (input_size.x - cube_size) / 2.0;
+    vec3 face_offset = vec3(0, gp_cube_width, gp_cube_width + cube_size) / input_size.x;
+    vec3 face_size_x = vec3(gp_cube_width, cube_size, gp_cube_width) / input_size.x;
+
+    int face;
+    vec3 view;
+    if (abs_dir.x >= abs_dir.y && abs_dir.x >= abs_dir.z) {
+        face = (dir.x > 0.0) ? 2 : 0;
+        view = (dir.x > 0.0) ? vec3(-dir.z,  dir.y, abs_dir.x)
+                             : vec3( dir.z,  dir.y, abs_dir.x);
+    } else if (abs_dir.y >= abs_dir.z) {
+        face = (dir.y > 0.0) ? 3 : 5;
+        view = (dir.y > 0.0) ? vec3(-dir.z, -dir.x, abs_dir.y)
+                             : vec3( dir.z, -dir.x, abs_dir.y);
+    } else {
+        face = (dir.z > 0.0) ? 1 : 4;
+        view = (dir.z > 0.0) ? vec3( dir.x,  dir.y, abs_dir.z)
+                             : vec3(-dir.y, -dir.x, abs_dir.z);
+    }
+    // Equi-Angular Projection
+    vec2 uv = atan2(view.xy, view.z) * (2.0 / M_PI) + 0.5;
+
+    ivec2 grid = ivec2(face % 3, face / 3);
+    vec2 face_size = vec2(face_size_x[grid.x], 1.0 / 2.0);
+    vec2 uv_start = vec2(face_offset[grid.x], float(grid.y) * face_size.y);
+    vec2 uv_end = uv_start + face_size;
+    vec4 res;
+
+    if (grid.x == 1)
+        res = sample_tex(mix(uv_start, uv_end, uv));
+    else {
+        float overlap = float(gopro_overlap);
+        float gp_ratio = (gp_cube_width - overlap) / gp_cube_width;
+        float blend_width = overlap / (gp_cube_width - overlap);
+        vec3 blend_x = vec3(gp_cube_width / 2 - overlap,
+                            gp_cube_width / 2,
+                            gp_cube_width / 2 + overlap) / gp_cube_width;
+        vec2 uv1 = vec2(uv.x * gp_ratio, uv.y);
+        vec2 uv2 = vec2((uv.x + blend_width) * gp_ratio, uv.y);
+        if (uv1.x < blend_x[0])
+            res = sample_tex(mix(uv_start, uv_end, uv1));
+        else if (uv2.x > blend_x[2])
+            res = sample_tex(mix(uv_start, uv_end, uv2));
+        else {
+            res = sample_tex(mix(uv_start, uv_end, uv1));
+            vec4 res2 = sample_tex(mix(uv_start, uv_end, uv2));
+            float a = (uv1.x - blend_x[0]) / (blend_x[1] - blend_x[0]);
+            res = mix(res, res2, a);
+        }
+    }
+    return res;
 }
 
 vec4 render(vec2 uv, int source_eye) {
@@ -354,6 +424,8 @@ vec4 render(vec2 uv, int source_eye) {
     case dual_equiangular_cubemap:
         coord = sample_equiangular_cubemap(dir, source_eye);
         break;
+    case gopro_max:
+        return sample_gopro_max(dir);
     }
 
     if (coord.x < -999.0)

@@ -58,6 +58,8 @@ local config = {
     step = math.rad(0.75),              -- Step for keyboard controls
     fisheye_fov_step = math.rad(10),    -- Step for fisheye FOV adjustment
 
+    gopro_overlap = 64,                 -- overlapped pixels for GoPro Max
+
     enabled = false,                    -- Start with 360° mode enabled
     show_values = true,                 -- Show camera orientation on change
 }
@@ -79,6 +81,7 @@ local projection_names = {
     [5] = "Cylindrical",
     [6] = "Equi-Angular Cubemap",
     [7] = "Dual Equi-Angular Cubemap",
+    [8] = "GoPro Max (Modified EAC)",
 }
 
 local eye_names = {
@@ -112,8 +115,11 @@ local function show_values()
     local fisheye_fov = is_fisheye()
                         and string.format(" | Fisheye FOV: %.0f°", math.deg(config.fisheye_fov))
                         or ""
+    local overlap = config.input_projection == 8
+                    and string.format(" | Overlap: %d", config.gopro_overlap)
+                    or ""
     local info = string.format(
-        "Proj: %s" ..  fisheye_fov .. eye .. " | Sampling: %s\n" ..
+        "Proj: %s" ..  fisheye_fov .. eye .. overlap .. " | Sampling: %s\n" ..
         "Yaw: %.1f° | Pitch: %.1f° | Roll: %.1f° | FOV: %.1f°",
         projection_names[config.input_projection] or "N/A",
         sampling_names[config.sampling] or "N/A",
@@ -155,9 +161,11 @@ local function update_params()
 
     local params = string.format(
         "mpv360/fov=%f,mpv360/yaw=%f,mpv360/pitch=%f,mpv360/roll=%f," ..
-        "mpv360/input_projection=%d,mpv360/fisheye_fov=%f,mpv360/eye=%d,mpv360/sampling=%d",
+        "mpv360/input_projection=%d,mpv360/fisheye_fov=%f,mpv360/eye=%d,mpv360/sampling=%d," ..
+        "mpv360/gopro_overlap=%d",
         config.fov, config.yaw, config.pitch, config.roll,
-        config.input_projection, config.fisheye_fov, config.eye, config.sampling
+        config.input_projection, config.fisheye_fov, config.eye, config.sampling,
+        config.gopro_overlap
     )
     mp.commandv("no-osd", "change-list", "glsl-shader-opts", "add", params)
     show_values()
@@ -307,6 +315,9 @@ local function show_help()
         "• Switch eye: " .. get_key("switch-eye"),
         "• Cycle sampling: " .. get_key("cycle-sampling"),
         "",
+        "• Increase GoPro Max Overlap: " .. get_key("gopro-overlap-increase"),
+        "• Decrease GoPro Max Overlap: " .. get_key("gopro-overlap-decrease"),
+        "",
         "• Toggle mouse look: " .. get_key("toggle-mouse-look"),
         "• Show this help: " .. get_key("show-help"),
     }
@@ -355,6 +366,8 @@ commands = {
     ["cycle-sampling"] = function ()
         config.sampling = (config.sampling + 1) % (#sampling_names + 1)
     end,
+    ["gopro-overlap-increase"] = function () config.gopro_overlap = config.gopro_overlap + 2 end,
+    ["gopro-overlap-decrease"] = function () config.gopro_overlap = config.gopro_overlap - 2 end,
     ["show-help"] = show_help,
 }
 
@@ -372,6 +385,37 @@ initial_pos = {
 }
 
 mp.add_key_binding(config["toggle"], "toggle", commands["toggle"], {repeatable = true})
+
+-- Stack two video inputs GoPro Max
+mp.add_hook("on_preloaded", 50, function ()
+    local filename = mp.get_property("filename")
+    if string.match(filename, "%.360$") then
+        local count = 0
+        for _, track in ipairs(mp.get_property_native("track-list")) do
+            if track.type == "video" then
+                count = count + 1
+            end
+        end
+        if count ~= 2 then
+            return
+        end
+
+        local prop = mp.get_property("lavfi-complex")
+        if prop ~= '' then
+            mp.set_property("lavfi-complex", "[vid1][vid2]vstack," .. prop .. "[vo]")
+        else
+            mp.set_property("lavfi-complex", "[vid1][vid2]vstack[vo]")
+        end
+        config.input_projection = 8
+    end
+end)
+
+mp.add_hook("on_unload", 50, function ()
+    local prop = mp.get_property("lavfi-complex")
+    prop = string.gsub(prop, "%[vid1%]%[vid2%]vstack[, ]*", "")
+    prop = string.gsub(prop, "%[vo%]", "")
+    mp.set_property("lavfi-complex", prop)
+end)
 
 if config.enabled then
     enable()
